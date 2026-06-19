@@ -6,7 +6,7 @@
 #include <esp_task_wdt.h>
 
 //=========================================
-#define UPdateRate 10
+#define UPdateRate  10
 #define READ_INTERVAL_MS 10000
 unsigned long lastReadMillis = 0;
 unsigned long SystemCounter = 0;
