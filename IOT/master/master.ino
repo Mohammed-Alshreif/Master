@@ -6,7 +6,7 @@
 #include <esp_task_wdt.h>
 
 //=========================================
-#define UPdateRate  10
+#define UPdateRate 10
 #define READ_INTERVAL_MS 10000
 unsigned long lastReadMillis = 0;
 unsigned long SystemCounter = 0;
@@ -22,6 +22,7 @@ unsigned long SystemCounter = 0;
 #define ECHO_PIN 18
 #define IRRIGATION_RELAY_PIN 19
 #define FERTILIZER_RELAY_PIN 21
+#define LED_PIN 2
 //==========================================
 
 // Helper functions
@@ -143,7 +144,7 @@ void updateSensors() {
   }
   adc = adc / 100;
   lux = 25 * exp(adc * 0.00192);
-
+  //lux=lux/1000;
   // ====== Upload to Firebase ======
   // // Living room sensors
   // Firebase.RTDB.setInt(&fbdo, basePath + "room1/sensors/sensors1/value", temp);
@@ -172,16 +173,24 @@ void updateSensors() {
   json.set("sensors/sensors2/unit", "%");
 
   json.set("sensors/sensors3/value", soil);
-  json.set("sensors/sensors3/name", "ٍSoil Moisture");
+  json.set("sensors/sensors3/name", "Soil Moisture");
   json.set("sensors/sensors3/unit", "%");
 
   json.set("sensors/sensors4/value", waterLevel);
-  json.set("sensors/sensors4/name", "waterLevel");
+  json.set("sensors/sensors4/name", "WaterLevel");
   json.set("sensors/sensors4/unit", "cm");
 
-  json.set("sensors/sensors5/value", (long)lux);
-  json.set("sensors/sensors5/name", "lux sensor");
-  json.set("sensors/sensors5/unit", "lux");
+  json.set("sensors/sensors5/value", round((lux / 1000.0) * 1000) / 1000.0);
+  json.set("sensors/sensors5/name", "Lux sensor");
+  json.set("sensors/sensors5/unit", "10^3 lux");
+
+  json.set("sensors/sensors6/value", (short)Irrigationmin_Hum);
+  json.set("sensors/sensors6/name", "Irrigation_MIN_Hum AI STATE");
+  json.set("sensors/sensors6/unit", "%");
+  
+  json.set("sensors/sensors7/value", (short)Irrigation_maxHum);
+  json.set("sensors/sensors7/name", "Irrigation MAX_Hum AI STATE");
+  json.set("sensors/sensors7/unit", "%");
   // ====== Single Firebase Request ======
   if (!Firebase.RTDB.updateNode(
         &fbdo,
@@ -198,40 +207,37 @@ void updateSensors() {
 //==============================================================
 //==========================Read_FireBase=======================
 void Read_FireBase() {
-  //IrrigationState
-  if (Firebase.RTDB.getBool(&fbdo, basePath + "room1/devices/device3/status")) {
-    IrrigationState = fbdo.boolData();
-  } else {
-    Serial.println("Failed to read IrrigationState");
-    Serial.println(fbdo.errorReason());
-    ESP.restart();
-  }
+   FirebaseJsonData result;
 
-  //Irrigation_maxHum
-  if (Firebase.RTDB.getInt(&fbdo, basePath + "room1/devices/device3/Max_HUM")) {
-    Irrigation_maxHum = fbdo.intData();
-  } else {
-    Serial.println("Failed to read Irrigation_maxHum");
-    Serial.println(fbdo.errorReason());
-    ESP.restart();
-  }
+    if (Firebase.RTDB.getJSON(&fbdo, basePath + "room1"))
+    {
+        FirebaseJson &json = fbdo.jsonObject();
 
-  //Irrigationmin_Hum
-  if (Firebase.RTDB.getInt(&fbdo, basePath + "room1/devices/device3/MIN_HUM")) {
-    Irrigationmin_Hum = fbdo.intData();
-  } else {
-    Serial.println("Failed to read Irrigationmin_Hum");
-    Serial.println(fbdo.errorReason());
-  }
+        json.get(result, "devices/device3/status");
+        IrrigationState = result.boolValue;
 
-  //FertilizerState
-  if (Firebase.RTDB.getBool(&fbdo, basePath + "room1/devices/device1/status")) {
-    FertilizerState = fbdo.boolData();
-  } else {
-    Serial.println("Failed to read FertilizerState");
-    Serial.println(fbdo.errorReason());
-  }
-  Serial.printf("IrrigationState=%d Irrigation_maxHum=%d Irrigationmin_Hum=%d FertilizerState=%d  \n", IrrigationState, Irrigation_maxHum, Irrigationmin_Hum, FertilizerState);
+        json.get(result, "devices/device3/Max_HUM");
+        Irrigation_maxHum = result.intValue;
+
+        json.get(result, "devices/device3/MIN_HUM");
+        Irrigationmin_Hum = result.intValue;
+
+        json.get(result, "devices/device1/status");
+        FertilizerState = result.boolValue;
+
+        Serial.printf(
+            "IrrigationState=%d Irrigation_maxHum=%d Irrigationmin_Hum=%d FertilizerState=%d\n",
+            IrrigationState,
+            Irrigation_maxHum,
+            Irrigationmin_Hum,
+            FertilizerState);
+    }
+    else
+    {
+        Serial.println("Failed to read JSON");
+        Serial.println(fbdo.errorReason());
+        ESP.restart();
+    }
 }
 
 //====================================================================
@@ -262,6 +268,7 @@ void irrigationTask() {
   //===================== Irrigation State Machine ===================
   if (IrrigationState == true) {
     irrigationCounter++;
+    Read_FireBase();
     switch (IrrigationStatmachine) {
       case IRR_PUMP_ON:
 
@@ -307,6 +314,8 @@ void irrigationTask() {
     }
   } else {
     irrigationCounter = 0;
+    Serial.println("Pump OFF ---");
+    digitalWrite(IRRIGATION_RELAY_PIN, HIGH);  //IRRIGATION_RELAY_PIN oFF
   }
 }
 //=========================================================
@@ -318,6 +327,8 @@ void setup() {
   digitalWrite(IRRIGATION_RELAY_PIN, HIGH);
   pinMode(FERTILIZER_RELAY_PIN, OUTPUT);
   digitalWrite(FERTILIZER_RELAY_PIN, HIGH);
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH);
   pinMode(ECHO_PIN, INPUT);
   analogReadResolution(12);  // Set ADC resolution to 12-bit (0 - 4095)
   dht.begin();
@@ -343,6 +354,7 @@ void setup() {
   config.token_status_callback = tokenStatusCallback;
   Firebase.begin(&config, &auth);
   Firebase.reconnectWiFi(true);
+  digitalWrite(LED_PIN, LOW);
   //watch dog timer
   //  esp_task_wdt_init(30, true);
   //  esp_task_wdt_add(NULL);
@@ -358,13 +370,16 @@ void loop() {
     updateConnections();
     if (SystemCounter > UPdateRate) {
       SystemCounter=0;
-      updateSensors();
       Read_FireBase();
+      updateSensors();
     }
 
     irrigationTask();
     FertilizeTask();
     Serial.printf("Free heap: %d\n", ESP.getFreeHeap());
+    ToggleLed();
+  }else{
+    //ESP.restart();
   }
 }
 //==============================================================
@@ -404,4 +419,13 @@ bool reconnectFirebase() {
   }
 
   return Firebase.ready();
+}
+//==============================================================
+//==============================================================
+void ToggleLed()
+{
+    static bool ledState = false;
+
+    ledState = !ledState;
+    digitalWrite(LED_PIN, ledState);
 }
